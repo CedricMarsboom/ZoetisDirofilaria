@@ -1,0 +1,1047 @@
+---
+title: "Model development to assess the impact of a preventive treatment with sarolaner and moxidectin on Dirofilaria immitis infection dynamics in dogs"
+author: "Cedric Marsboom, Emilie Hendrickx"
+output:
+  html_document:
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(ggplot2)
+library(forcats)
+library(reshape2)
+set.seed(1)
+```
+
+
+Starting populations and the parameters that can be tuned
+
+```{r Parameters}
+#Length
+RunTimeSteps=50 #Set the number of time steps
+StatusAll=as.character(c(0,10,11,20,21,22,30,31,32,40,41,42)) #All the possible statuses
+
+#StartPop
+MosqStartPop=1000000 #Size of the starting mosquito population
+DogsStartPop=10000 #Size of the starting dog population
+BirthRate=.5 #Birth rate of the mosquitoes
+
+#Parameters
+MosquitoAge=c(0,1,2) #The different age classes for the mosquitoes #Not used
+HostPreference=.55 #Host preference of the mosquitoes for dogs
+BitingRate=.83 #Biting rate of the mosquitoes per time step
+Prevelance=.1 #Prevelance of the disease in dogs
+MinInfectiousRate=.32 #Minimum infectious rate of the mosquitoes
+MinInfectiousRateDogs=1 #All infected dogs will become infectious #Not used
+Treatment=.6 #Treatment compliance rate of the dogs
+DeathRate=.1 #Natural deaths of the mosquitoes
+
+#Outputs
+MosqOut=tibble(Status=StatusAll) #Life stages of the mosquitoes at a given time step
+```
+
+
+Initial phase
+
+Mosquitoes live for a total of 4 timesteps
+
+0=Dogs not infected, not treated
+1=Dogs infected, not treated
+2=Dogs infected, treated
+3=Dogs not infected, treated
+
+```{r Initiate}
+#DogsStages at t0
+DogsPopInitial=rbinom(DogsStartPop, 1, Prevelance)
+DogsInf=sum(DogsPopInitial)
+DogsNonInf=DogsStartPop-DogsInf
+DogsRatio=DogsInf/DogsNonInf
+DogsInfTreated=sum(rbinom(DogsInf, 1,Treatment))
+DogsNonInfTreated=sum(rbinom(DogsNonInf, 1,Treatment))
+DogsRatioTreated=DogsInfTreated/DogsNonInfTreated
+
+DogsPop=c(rep(0,DogsNonInf-DogsNonInfTreated), #0=Dogs not infected, not treated
+           rep(1,(DogsInf-DogsInfTreated)), #1=Dogs infected, not treated
+           rep(2,(DogsInfTreated)), #2=Dogs infected, treated
+           rep(3,(DogsNonInfTreated)) #3=Dogs not infected, treated
+           )
+
+DogsOut=tibble(t0=DogsPop)
+
+#MosquitoStages at t0
+MosqDogs=sum(rbinom(MosqStartPop, 1, HostPreference))
+BittenDogs=sample(DogsPop, MosqDogs,replace=T)
+
+NaturalDeaths=sum(rbinom(MosqStartPop, 1,(1-DeathRate)))
+TotalMosqPop=c(BittenDogs,rep(0,MosqStartPop-MosqDogs))
+SurvMosqAll=sample(TotalMosqPop, NaturalDeaths)
+
+MosqStatus=as.data.frame(table(SurvMosqAll))
+TreatedMosq=sum(MosqStatus %>% filter(SurvMosqAll %in% c(2,3)) %>% select(Freq))
+InfectedMosq=sum(MosqStatus %>% filter(SurvMosqAll %in% c(1)) %>% select(Freq))
+NonInfectedMosq=sum(MosqStatus %>% filter(SurvMosqAll %in% c(0)) %>% select(Freq))
+
+MosqOut=merge(MosqOut,MosqStatus,by.x ="Status",by.y ="SurvMosqAll",all.x = T)
+
+```
+
+Mosquito stages going to the next time step
+
+```{r Mosq pop going to T1}
+FreshMosquitoes=sum(rbinom((InfectedMosq+NonInfectedMosq), 1,BirthRate))
+SurvMosq=SurvMosqAll[SurvMosqAll %in% c(0,1)]
+MosqPopT1=c(rep(0,FreshMosquitoes), #0=New adults
+             rep(10,NonInfectedMosq), #10=Non-infected mosq age 1
+             rep(11,InfectedMosq) #11=Infected mosq age 1
+)
+```
+
+
+Initial phase T1
+
+Mosquitoes bite again
+```{r Mosq biting T1}
+MosqDogsT1=sum(rbinom(length(MosqPopT1), 1, HostPreference))
+MosqBittenDogsT1=sample(MosqPopT1, MosqDogsT1)
+MosqBittenDogsStatusT1=as.data.frame(table(MosqBittenDogsT1))
+MosqPopStatusT1=as.data.frame(table(MosqPopT1))
+MosqPopSummT1=data.frame(Status=MosqPopStatusT1$MosqPopT1,All=MosqPopStatusT1$Freq,BittenDog=MosqBittenDogsStatusT1$Freq,Diff=MosqPopStatusT1$Freq-MosqBittenDogsStatusT1$Freq)
+
+MosqOut=merge(MosqOut,MosqPopStatusT1,by.x ="Status",by.y ="MosqPopT1",all = T)
+```
+
+We now have 2 pathways a infected and non-infected one
+
+Non-infected pathway
+
+10=Non-infected mosquitoes age 1
+11=Infected mosquitoes age 1
+99=Treated mosquitoes 
+
+```{r Non-infected T1}
+NonInfectedMosqLS0=MosqBittenDogsStatusT1[MosqBittenDogsStatusT1$MosqBittenDogsT1==0,"Freq"]
+NonInfectedMosqLS1=MosqBittenDogsStatusT1[MosqBittenDogsStatusT1$MosqBittenDogsT1==10,"Freq"]
+
+NonInfectedMosqLS0BittenDogs=sample(DogsPop, NonInfectedMosqLS0,replace=T)
+NonInfectedMosqLS0BittenDogsStatus=as.data.frame(table(NonInfectedMosqLS0BittenDogs))
+
+TreatedNonInfectedMosqLS0=sum(NonInfectedMosqLS0BittenDogsStatus %>% filter(NonInfectedMosqLS0BittenDogs %in% c(2,3)) %>% select(Freq))
+InfectedNonInfectedMosqLS0=sum(NonInfectedMosqLS0BittenDogsStatus %>% filter(NonInfectedMosqLS0BittenDogs %in% c(1)) %>% select(Freq))
+NonInfectedNonInfectedMosqLS0=sum(NonInfectedMosqLS0BittenDogsStatus %>% filter(NonInfectedMosqLS0BittenDogs %in% c(0)) %>% select(Freq))
+
+NewMosqPopT2All=c(rep(99,TreatedNonInfectedMosqLS0),  #99=Treated
+               rep(10,NonInfectedNonInfectedMosqLS0), #10=Non-infected mosq age 1
+               rep(11,InfectedNonInfectedMosqLS0) #11=Infected mosq age 1
+               )
+
+NonInfectedMosqLS1BittenDogs=sample(DogsPop, NonInfectedMosqLS1,replace=T)
+NonInfectedMosqLS1BittenDogsStatus=as.data.frame(table(NonInfectedMosqLS1BittenDogs))
+
+TreatedNonInfectedMosqLS1=sum(NonInfectedMosqLS1BittenDogsStatus %>% filter(NonInfectedMosqLS1BittenDogs %in% c(2,3)) %>% select(Freq))
+InfectedNonInfectedMosqLS1=sum(NonInfectedMosqLS1BittenDogsStatus %>% filter(NonInfectedMosqLS1BittenDogs %in% c(1)) %>% select(Freq))
+NonInfectedNonInfectedMosqLS1=sum(NonInfectedMosqLS1BittenDogsStatus %>% filter(NonInfectedMosqLS1BittenDogs %in% c(0)) %>% select(Freq))
+
+NewMosqPopT2All=c(NewMosqPopT2All,
+               rep(99,TreatedNonInfectedMosqLS1),  #99=Treated
+               rep(20,NonInfectedNonInfectedMosqLS1), #10=Non-infected mosq age 2
+               rep(21,InfectedNonInfectedMosqLS1) #11=Infected mosq age 2
+)
+```
+
+Infected pathway
+
+Mosquitoes at this stage are not infectious yet but can die from being treated 
+
+22=Infectious mosquitoes age 2
+```{r Infected T1}
+InfectedMosqLS1=MosqBittenDogsStatusT1[MosqBittenDogsStatusT1$MosqBittenDogsT1==11,"Freq"]
+InfectedMosqLS1BittenDogs=sample(DogsPop, InfectedMosqLS1,replace=T)
+InfectedMosqLS1BittenDogsStatus=as.data.frame(table(InfectedMosqLS1BittenDogs))
+
+TreatedInfectedMosqLS1=sum(InfectedMosqLS1BittenDogsStatus %>% filter(InfectedMosqLS1BittenDogs %in% c(2,3)) %>% select(Freq))
+
+NewMosqPopT2All=c(NewMosqPopT2All,
+                  rep(22,InfectedMosqLS1-TreatedInfectedMosqLS1),  #22=Infectious mosq age 2
+                  rep(99,TreatedInfectedMosqLS1) #99=Treated
+)
+```
+
+
+Mosquitoes die off naturally (also in the treated group)
+
+```{r Natural deaths T1}
+TotalMosqPop=c(NewMosqPopT2All,
+               rep(10,MosqPopSummT1[MosqPopSummT1$Status==0,"Diff"]),#Everythings moves up in age
+               rep(20,MosqPopSummT1[MosqPopSummT1$Status==10,"Diff"]),
+               rep(22,MosqPopSummT1[MosqPopSummT1$Status==11,"Diff"]) #They now become infectious
+               )
+NaturalDeaths=sum(rbinom(TotalMosqPop, 1,(1-DeathRate)))
+SurvMosqAll=sample(TotalMosqPop, NaturalDeaths)
+```
+
+Mosquito stages going to the next time step
+
+```{r Mosq pop going to T2}
+SurvMosq=SurvMosqAll[SurvMosqAll!=99]
+FreshMosquitoes=sum(rbinom(SurvMosq, 1,BirthRate))
+MosqPopT2=c(rep(0,FreshMosquitoes), #0=New adults
+            SurvMosq
+)
+
+DogsOut$t1=DogsPop
+```
+
+
+Initial phase T2
+
+Mosquitoes bite again
+```{r Mosq biting T2}
+MosqDogsT2=sum(rbinom(length(MosqPopT2), 1, HostPreference))
+MosqBittenDogsT2=sample(MosqPopT2, MosqDogsT2)
+MosqBittenDogsStatusT2=as.data.frame(table(MosqBittenDogsT2))
+MosqPopStatusT2=as.data.frame(table(MosqPopT2))
+
+tmp=as.character(MosqPopStatusT2$MosqPopT2[!(MosqPopStatusT2$MosqPopT2 %in% MosqBittenDogsStatusT2$MosqBittenDogsT2)])
+tmp.df=cbind(tmp,rep(0,length(tmp)))
+colnames(tmp.df)=colnames(MosqBittenDogsStatusT2)
+MosqBittenDogsStatusT2$MosqBittenDogsT2=as.character(MosqBittenDogsStatusT2$MosqBittenDogsT2)
+MosqBittenDogsStatusT2=rbind(MosqBittenDogsStatusT2,tmp.df)
+MosqBittenDogsStatusT2$Freq=as.numeric(MosqBittenDogsStatusT2$Freq)
+MosqPopSummT2=merge(MosqPopStatusT2,MosqBittenDogsStatusT2,by.x = "MosqPopT2", by.y = "MosqBittenDogsT2")
+colnames(MosqPopSummT2)=c("Status","All","BittenDog")
+MosqPopSummT2$Diff=MosqPopSummT2$All-MosqPopSummT2$BittenDog
+MosqPopSummT2$Status=as.character(MosqPopSummT2$Status)
+tmp=StatusAll[!(StatusAll %in% MosqPopSummT2$Status)]
+tmp.df=cbind(tmp,rep(0,length(tmp)),rep(0,length(tmp)),rep(0,length(tmp)))
+colnames(tmp.df)=colnames(MosqPopSummT2)
+MosqPopSummT2=rbind(MosqPopSummT2,tmp.df)
+
+MosqOut=merge(MosqOut,MosqPopStatusT2,by.x ="Status",by.y ="MosqPopT2",all = T)
+```
+
+
+Non-infected pathway
+
+30=Non-infected mosq age 3
+31=Infected mosq age 3
+
+```{r Non-infected pathway T2}
+NonInfectedMosqLS0=MosqBittenDogsStatusT2[MosqBittenDogsStatusT2$MosqBittenDogsT2==0,"Freq"]
+NonInfectedMosqLS1=MosqBittenDogsStatusT2[MosqBittenDogsStatusT2$MosqBittenDogsT2==10,"Freq"]
+NonInfectedMosqLS2=MosqBittenDogsStatusT2[MosqBittenDogsStatusT2$MosqBittenDogsT2==20,"Freq"]
+
+NonInfectedMosqLS0BittenDogs=sample(DogsPop, NonInfectedMosqLS0,replace=T)
+NonInfectedMosqLS0BittenDogsStatus=as.data.frame(table(NonInfectedMosqLS0BittenDogs))
+
+TreatedNonInfectedMosqLS0=sum(NonInfectedMosqLS0BittenDogsStatus %>% filter(NonInfectedMosqLS0BittenDogs %in% c(2,3)) %>% select(Freq))
+InfectedNonInfectedMosqLS0=sum(NonInfectedMosqLS0BittenDogsStatus %>% filter(NonInfectedMosqLS0BittenDogs %in% c(1)) %>% select(Freq))
+NonInfectedNonInfectedMosqLS0=sum(NonInfectedMosqLS0BittenDogsStatus %>% filter(NonInfectedMosqLS0BittenDogs %in% c(0)) %>% select(Freq))
+
+NewMosqPopT3All=c(rep(99,TreatedNonInfectedMosqLS0),  #99=Treated
+               rep(10,NonInfectedNonInfectedMosqLS0), #10=Non-infected mosq age 1
+               rep(11,InfectedNonInfectedMosqLS0) #11=Infected mosq age 1
+               )
+
+NonInfectedMosqLS1BittenDogs=sample(DogsPop, NonInfectedMosqLS1,replace=T)
+NonInfectedMosqLS1BittenDogsStatus=as.data.frame(table(NonInfectedMosqLS1BittenDogs))
+
+TreatedNonInfectedMosqLS1=sum(NonInfectedMosqLS1BittenDogsStatus %>% filter(NonInfectedMosqLS1BittenDogs %in% c(2,3)) %>% select(Freq))
+InfectedNonInfectedMosqLS1=sum(NonInfectedMosqLS1BittenDogsStatus %>% filter(NonInfectedMosqLS1BittenDogs %in% c(1)) %>% select(Freq))
+NonInfectedNonInfectedMosqLS1=sum(NonInfectedMosqLS1BittenDogsStatus %>% filter(NonInfectedMosqLS1BittenDogs %in% c(0)) %>% select(Freq))
+
+NewMosqPopT3All=c(NewMosqPopT3All,
+               rep(99,TreatedNonInfectedMosqLS1),  #99=Treated
+               rep(20,NonInfectedNonInfectedMosqLS1), #10=Non-infected mosq age 2
+               rep(21,InfectedNonInfectedMosqLS1) #11=Infected mosq age 2
+)
+
+NonInfectedMosqLS2BittenDogs=sample(DogsPop, NonInfectedMosqLS2,replace=T)
+NonInfectedMosqLS2BittenDogsStatus=as.data.frame(table(NonInfectedMosqLS2BittenDogs))
+
+TreatedNonInfectedMosqLS2=sum(NonInfectedMosqLS2BittenDogsStatus %>% filter(NonInfectedMosqLS2BittenDogs %in% c(2,3)) %>% select(Freq))
+InfectedNonInfectedMosqLS2=sum(NonInfectedMosqLS2BittenDogsStatus %>% filter(NonInfectedMosqLS2BittenDogs %in% c(1)) %>% select(Freq))
+NonInfectedNonInfectedMosqLS2=sum(NonInfectedMosqLS2BittenDogsStatus %>% filter(NonInfectedMosqLS2BittenDogs %in% c(0)) %>% select(Freq))
+
+NewMosqPopT3All=c(NewMosqPopT3All,
+               rep(99,TreatedNonInfectedMosqLS2),  #99=Treated
+               rep(30,NonInfectedNonInfectedMosqLS2), #30=Non-infected mosq age 3
+               rep(31,InfectedNonInfectedMosqLS2) #31=Infected mosq age 3
+)
+```
+
+Infected pathway
+
+32=Infectious mosq age 3
+
+```{r Infected pathway T2}
+InfectedMosqLS1=MosqBittenDogsStatusT2[MosqBittenDogsStatusT2$MosqBittenDogsT2==11,"Freq"]
+InfectedMosqLS2=MosqBittenDogsStatusT2[MosqBittenDogsStatusT2$MosqBittenDogsT2==21,"Freq"]
+
+InfectedMosqLS1BittenDogs=sample(DogsPop, InfectedMosqLS1,replace=T)
+InfectedMosqLS1BittenDogsStatus=as.data.frame(table(InfectedMosqLS1BittenDogs))
+TreatedInfectedMosqLS1=sum(InfectedMosqLS1BittenDogsStatus %>% filter(InfectedMosqLS1BittenDogs %in% c(2,3)) %>% select(Freq))
+
+NewMosqPopT3All=c(NewMosqPopT3All,
+                  rep(22,InfectedMosqLS1-TreatedInfectedMosqLS1),  #22=Infectious mosq age 2
+                  rep(99,TreatedInfectedMosqLS1) #99=Treated
+)
+
+InfectedMosqLS2BittenDogs=sample(DogsPop, InfectedMosqLS2,replace=T)
+InfectedMosqLS2BittenDogsStatus=as.data.frame(table(InfectedMosqLS2BittenDogs))
+TreatedInfectedMosqLS2=sum(InfectedMosqLS2BittenDogsStatus %>% filter(InfectedMosqLS2BittenDogs %in% c(2,3)) %>% select(Freq))
+
+NewMosqPopT3All=c(NewMosqPopT3All,
+                  rep(32,InfectedMosqLS2-TreatedInfectedMosqLS2),  #32=Infectious mosq age 3
+                  rep(99,TreatedInfectedMosqLS2) #99=Treated
+)
+```
+
+Mosquitoes become infectious in 2 time steps so we need to add a third pathway: the infectious pathway
+
+Infectious pathway
+```{r Infectious pathway T2}
+InfectiousMosqLS2=MosqBittenDogsStatusT2[MosqBittenDogsStatusT2$MosqBittenDogsT2==22,"Freq"]
+InfectiousMosqLS2BittenDogs=sample(DogsPop, InfectiousMosqLS2,replace=T)
+InfectiousMosqLS2BittenDogsStatus=as.data.frame(table(InfectiousMosqLS2BittenDogs))
+
+TreatedInfectiousMosqLS2=sum(InfectiousMosqLS2BittenDogsStatus %>% filter(InfectiousMosqLS2BittenDogs %in% c(2,3)) %>% select(Freq))
+
+NewMosqPopT3All=c(NewMosqPopT3All,
+                  rep(32,InfectiousMosqLS2-TreatedInfectiousMosqLS2),  #32=Infectious mosq age 3
+                  rep(99,TreatedInfectiousMosqLS2) #99=Treated
+)
+```
+
+
+Dogs get infected and will take 60 days to become infectious (15 time steps) so we need to keep count of that
+
+100=Infected dogs but not yet infectious at infection age 1
+
+```{r Dogs get infected T2}
+NewInfectedDogs=sum(rbinom(sum(InfectiousMosqLS2BittenDogsStatus[InfectiousMosqLS2BittenDogsStatus$ InfectiousMosqLS2BittenDogs==0,"Freq"]),
+                           1,MinInfectiousRate))
+DogsPop=replace(DogsPop,which(DogsPop==0)[1:NewInfectedDogs],100) 
+
+```
+
+Mosquitoes die off naturally (also in the treated group)
+
+```{r Natural deaths T2}
+TotalMosqPop=c(NewMosqPopT3All,
+               rep(10,MosqPopSummT2[MosqPopSummT2$Status==0,"Diff"]),#Everything moves up in age
+               rep(20,MosqPopSummT2[MosqPopSummT2$Status==10,"Diff"]),#Everything moves up in age
+               rep(22,MosqPopSummT2[MosqPopSummT2$Status==11,"Diff"]), #They now become infectious
+               rep(30,MosqPopSummT2[MosqPopSummT2$Status==20,"Diff"]),#Everything moves up in age
+               rep(32,MosqPopSummT2[MosqPopSummT2$Status==21,"Diff"]),#They now become infectious
+               rep(32,MosqPopSummT2[MosqPopSummT2$Status==22,"Diff"]) #Remain infectious
+               )
+NaturalDeaths=sum(rbinom(TotalMosqPop, 1,(1-DeathRate)))
+SurvMosqAll=sample(TotalMosqPop, NaturalDeaths)
+```
+
+Mosquito stages going to the next time step
+
+```{r Mosq pop going to T3}
+SurvMosq=SurvMosqAll[SurvMosqAll!=99]
+FreshMosquitoes=sum(rbinom(SurvMosq, 1,BirthRate))
+MosqPopT3=c(rep(0,FreshMosquitoes), #0=New adults
+            SurvMosq
+)
+
+DogsOut$t2=DogsPop
+```
+
+
+Initial phase T3
+
+Mosquitoes bite again
+```{r Mosq biting T3}
+MosqDogsT3=sum(rbinom(length(MosqPopT3), 1, HostPreference))
+MosqBittenDogsT3=sample(MosqPopT3, MosqDogsT3)
+MosqBittenDogsStatusT3=as.data.frame(table(MosqBittenDogsT3))
+MosqPopStatusT3=as.data.frame(table(MosqPopT3))
+
+tmp=as.character(MosqPopStatusT3$MosqPopT3[!(MosqPopStatusT3$MosqPopT3 %in% MosqBittenDogsStatusT3$MosqBittenDogsT3)])
+tmp.df=cbind(tmp,rep(0,length(tmp)))
+colnames(tmp.df)=colnames(MosqBittenDogsStatusT3)
+MosqBittenDogsStatusT3$MosqBittenDogsT3=as.character(MosqBittenDogsStatusT3$MosqBittenDogsT3)
+MosqBittenDogsStatusT3=rbind(MosqBittenDogsStatusT3,tmp.df)
+MosqBittenDogsStatusT3$Freq=as.numeric(MosqBittenDogsStatusT3$Freq)
+MosqPopSummT3=merge(MosqPopStatusT3,MosqBittenDogsStatusT3,by.x = "MosqPopT3", by.y = "MosqBittenDogsT3")
+colnames(MosqPopSummT3)=c("Status","All","BittenDog")
+MosqPopSummT3$Diff=MosqPopSummT3$All-MosqPopSummT3$BittenDog
+MosqPopSummT3$Status=as.character(MosqPopSummT3$Status)
+tmp=StatusAll[!(StatusAll %in% MosqPopSummT3$Status)]
+tmp.df=cbind(tmp,rep(0,length(tmp)),rep(0,length(tmp)),rep(0,length(tmp)))
+colnames(tmp.df)=colnames(MosqPopSummT3)
+MosqPopSummT3=rbind(MosqPopSummT3,tmp.df)
+
+
+MosqOut=merge(MosqOut,MosqPopStatusT3,by.x ="Status",by.y ="MosqPopT3",all = T)
+```
+
+Dogs move up in infection age
+```{r Dogs aging T3}
+DogsPop=ifelse(DogsPop>=100,DogsPop+1,DogsPop)
+```
+
+
+Non-infected pathway
+
+40=Non-infected mosq age 4
+41=Infected mosq age 4
+
+```{r Non-infected pathway T3}
+NonInfectedMosqLS0=MosqBittenDogsStatusT3[MosqBittenDogsStatusT3$MosqBittenDogsT3==0,"Freq"]
+NonInfectedMosqLS1=MosqBittenDogsStatusT3[MosqBittenDogsStatusT3$MosqBittenDogsT3==10,"Freq"]
+NonInfectedMosqLS2=MosqBittenDogsStatusT3[MosqBittenDogsStatusT3$MosqBittenDogsT3==20,"Freq"]
+NonInfectedMosqLS3=MosqBittenDogsStatusT3[MosqBittenDogsStatusT3$MosqBittenDogsT3==30,"Freq"]
+
+NonInfectedMosqLS0BittenDogs=sample(DogsPop, NonInfectedMosqLS0,replace=T)
+NonInfectedMosqLS0BittenDogsStatus=as.data.frame(table(NonInfectedMosqLS0BittenDogs))
+
+TreatedNonInfectedMosqLS0=sum(NonInfectedMosqLS0BittenDogsStatus %>% filter(NonInfectedMosqLS0BittenDogs %in% c(2,3)) %>% select(Freq))
+InfectedNonInfectedMosqLS0=sum(NonInfectedMosqLS0BittenDogsStatus %>% filter(NonInfectedMosqLS0BittenDogs %in% c(1)) %>% select(Freq))
+NonInfectedNonInfectedMosqLS0=sum(NonInfectedMosqLS0BittenDogsStatus %>% filter(NonInfectedMosqLS0BittenDogs %in% c(0)) %>% select(Freq))
+
+NewMosqPopT4All=c(rep(99,TreatedNonInfectedMosqLS0),  #99=Treated
+               rep(10,NonInfectedNonInfectedMosqLS0), #10=Non-infected mosq age 1
+               rep(11,InfectedNonInfectedMosqLS0) #11=Infected mosq age 1
+               )
+
+NonInfectedMosqLS1BittenDogs=sample(DogsPop, NonInfectedMosqLS1,replace=T)
+NonInfectedMosqLS1BittenDogsStatus=as.data.frame(table(NonInfectedMosqLS1BittenDogs))
+
+TreatedNonInfectedMosqLS1=sum(NonInfectedMosqLS1BittenDogsStatus %>% filter(NonInfectedMosqLS1BittenDogs %in% c(2,3)) %>% select(Freq))
+InfectedNonInfectedMosqLS1=sum(NonInfectedMosqLS1BittenDogsStatus %>% filter(NonInfectedMosqLS1BittenDogs %in% c(1)) %>% select(Freq))
+NonInfectedNonInfectedMosqLS1=sum(NonInfectedMosqLS1BittenDogsStatus %>% filter(NonInfectedMosqLS1BittenDogs %in% c(0)) %>% select(Freq))
+
+NewMosqPopT4All=c(NewMosqPopT4All,
+               rep(99,TreatedNonInfectedMosqLS1),  #99=Treated
+               rep(20,NonInfectedNonInfectedMosqLS1), #10=Non-infected mosq age 2
+               rep(21,InfectedNonInfectedMosqLS1) #11=Infected mosq age 2
+)
+
+NonInfectedMosqLS2BittenDogs=sample(DogsPop, NonInfectedMosqLS2,replace=T)
+NonInfectedMosqLS2BittenDogsStatus=as.data.frame(table(NonInfectedMosqLS2BittenDogs))
+
+TreatedNonInfectedMosqLS2=sum(NonInfectedMosqLS2BittenDogsStatus %>% filter(NonInfectedMosqLS2BittenDogs %in% c(2,3)) %>% select(Freq))
+InfectedNonInfectedMosqLS2=sum(NonInfectedMosqLS2BittenDogsStatus %>% filter(NonInfectedMosqLS2BittenDogs %in% c(1)) %>% select(Freq))
+NonInfectedNonInfectedMosqLS2=sum(NonInfectedMosqLS2BittenDogsStatus %>% filter(NonInfectedMosqLS2BittenDogs %in% c(0)) %>% select(Freq))
+
+NewMosqPopT4All=c(NewMosqPopT4All,
+               rep(99,TreatedNonInfectedMosqLS2),  #99=Treated
+               rep(30,NonInfectedNonInfectedMosqLS2), #30=Non-infected mosq age 3
+               rep(31,InfectedNonInfectedMosqLS2) #31=Infected mosq age 3
+)
+
+
+NonInfectedMosqLS3BittenDogs=sample(DogsPop, NonInfectedMosqLS3,replace=T)
+NonInfectedMosqLS3BittenDogsStatus=as.data.frame(table(NonInfectedMosqLS3BittenDogs))
+
+TreatedNonInfectedMosqLS3=sum(NonInfectedMosqLS3BittenDogsStatus %>% filter(NonInfectedMosqLS3BittenDogs %in% c(2,3)) %>% select(Freq))
+InfectedNonInfectedMosqLS3=sum(NonInfectedMosqLS3BittenDogsStatus %>% filter(NonInfectedMosqLS3BittenDogs %in% c(1)) %>% select(Freq))
+NonInfectedNonInfectedMosqLS3=sum(NonInfectedMosqLS3BittenDogsStatus %>% filter(NonInfectedMosqLS3BittenDogs %in% c(0)) %>% select(Freq))
+
+NewMosqPopT4All=c(NewMosqPopT4All,
+               rep(99,TreatedNonInfectedMosqLS3),  #99=Treated
+               rep(40,NonInfectedNonInfectedMosqLS3), #40=Non-infected mosq age 4
+               rep(41,InfectedNonInfectedMosqLS3) #41=Infected mosq age 4
+)
+
+```
+
+
+Infected pathway
+
+42=Infectious mosq age 4
+
+```{r Infected pathway T3}
+InfectedMosqLS1=MosqBittenDogsStatusT3[MosqBittenDogsStatusT3$MosqBittenDogsT3==11,"Freq"]
+InfectedMosqLS2=MosqBittenDogsStatusT3[MosqBittenDogsStatusT3$MosqBittenDogsT3==21,"Freq"]
+InfectedMosqLS3=MosqBittenDogsStatusT3[MosqBittenDogsStatusT3$MosqBittenDogsT3==31,"Freq"]
+
+InfectedMosqLS1BittenDogs=sample(DogsPop, InfectedMosqLS1,replace=T)
+InfectedMosqLS1BittenDogsStatus=as.data.frame(table(InfectedMosqLS1BittenDogs))
+TreatedInfectedMosqLS1=sum(InfectedMosqLS1BittenDogsStatus %>% filter(InfectedMosqLS1BittenDogs %in% c(2,3)) %>% select(Freq))
+
+NewMosqPopT4All=c(NewMosqPopT4All,
+                  rep(22,InfectedMosqLS1-TreatedInfectedMosqLS1),  #22=Infectious mosq age 2
+                  rep(99,TreatedInfectedMosqLS1) #99=Treated
+)
+
+InfectedMosqLS2BittenDogs=sample(DogsPop, InfectedMosqLS2,replace=T)
+InfectedMosqLS2BittenDogsStatus=as.data.frame(table(InfectedMosqLS2BittenDogs))
+TreatedInfectedMosqLS2=sum(InfectedMosqLS2BittenDogsStatus %>% filter(InfectedMosqLS2BittenDogs %in% c(2,3)) %>% select(Freq))
+
+NewMosqPopT4All=c(NewMosqPopT4All,
+                  rep(32,InfectedMosqLS2-TreatedInfectedMosqLS2),  #32=Infectious mosq age 3
+                  rep(99,TreatedInfectedMosqLS2) #99=Treated
+)
+
+
+InfectedMosqLS3BittenDogs=sample(DogsPop, InfectedMosqLS3,replace=T)
+InfectedMosqLS3BittenDogsStatus=as.data.frame(table(InfectedMosqLS3BittenDogs))
+TreatedInfectedMosqLS3=sum(InfectedMosqLS3BittenDogsStatus %>% filter(InfectedMosqLS3BittenDogs %in% c(2,3)) %>% select(Freq))
+
+NewMosqPopT4All=c(NewMosqPopT4All,
+                  rep(42,InfectedMosqLS3-TreatedInfectedMosqLS3),  #42=Infectious mosq age 3
+                  rep(99,TreatedInfectedMosqLS3) #99=Treated
+)
+```
+
+
+Infectious pathway
+```{r Infectious pathway T3}
+InfectiousMosqLS2=MosqBittenDogsStatusT3[MosqBittenDogsStatusT3$MosqBittenDogsT3==22,"Freq"]
+InfectiousMosqLS3=MosqBittenDogsStatusT3[MosqBittenDogsStatusT3$MosqBittenDogsT3==32,"Freq"]
+
+InfectiousMosqLS2BittenDogs=sample(DogsPop, InfectiousMosqLS2,replace=T)
+InfectiousMosqLS2BittenDogsStatus=as.data.frame(table(InfectiousMosqLS2BittenDogs))
+TreatedInfectiousMosqLS2=sum(InfectiousMosqLS2BittenDogsStatus %>% filter(InfectiousMosqLS2BittenDogs %in% c(2,3)) %>% select(Freq))
+
+NewMosqPopT4All=c(NewMosqPopT4All,
+                  rep(32,InfectiousMosqLS2-TreatedInfectiousMosqLS2),  #32=Infectious mosq age 3
+                  rep(99,TreatedInfectiousMosqLS2) #99=Treated
+)
+
+InfectiousMosqLS3BittenDogs=sample(DogsPop, InfectiousMosqLS3,replace=T)
+InfectiousMosqLS3BittenDogsStatus=as.data.frame(table(InfectiousMosqLS3BittenDogs))
+TreatedInfectiousMosqLS3=sum(InfectiousMosqLS3BittenDogsStatus %>% filter(InfectiousMosqLS3BittenDogs %in% c(2,3)) %>% select(Freq))
+
+NewMosqPopT4All=c(NewMosqPopT4All,
+                  rep(42,InfectiousMosqLS3-TreatedInfectiousMosqLS3),  #42=Infectious mosq age 4
+                  rep(99,TreatedInfectiousMosqLS3) #99=Treated
+)
+```
+
+
+Dogs get infected and will take 60 days to become infectious (15 time steps) so we need to keep count of that
+
+100=Infected dogs but not yet infectious at infection age 1
+
+```{r Dogs get infected T3}
+NewInfectedDogs=sum(rbinom(sum(c(InfectiousMosqLS2BittenDogsStatus[InfectiousMosqLS2BittenDogsStatus$ InfectiousMosqLS2BittenDogs==0,"Freq"],
+                                 InfectiousMosqLS3BittenDogsStatus[InfectiousMosqLS3BittenDogsStatus$ InfectiousMosqLS3BittenDogs==0,"Freq"])),
+                           1,MinInfectiousRate))
+DogsPop=replace(DogsPop,which(DogsPop==0)[1:NewInfectedDogs],100) 
+
+```
+
+
+Mosquitoes die off naturally (also in the treated group)
+
+```{r Natural deaths T3}
+TotalMosqPop=c(NewMosqPopT4All,
+               rep(10,MosqPopSummT3[MosqPopSummT3$Status==0,"Diff"]),#Everything moves up in age
+               rep(20,MosqPopSummT3[MosqPopSummT3$Status==10,"Diff"]),#Everything moves up in age
+               rep(22,MosqPopSummT3[MosqPopSummT3$Status==11,"Diff"]), #They now become infectious
+               rep(30,MosqPopSummT3[MosqPopSummT3$Status==20,"Diff"]),#Everything moves up in age
+               rep(32,MosqPopSummT3[MosqPopSummT3$Status==21,"Diff"]),#They now become infectious
+               rep(32,MosqPopSummT3[MosqPopSummT3$Status==22,"Diff"]), #Remain infectious
+               rep(40,MosqPopSummT3[MosqPopSummT3$Status==30,"Diff"]),#Everything moves up in age
+               rep(42,MosqPopSummT3[MosqPopSummT3$Status==31,"Diff"]),#They now become infectious
+               rep(42,MosqPopSummT3[MosqPopSummT3$Status==32,"Diff"]) #Remain infectious
+               )
+NaturalDeaths=sum(rbinom(TotalMosqPop, 1,(1-DeathRate)))
+SurvMosqAll=sample(TotalMosqPop, NaturalDeaths)
+```
+
+Mosquito stages going to the next time step
+
+```{r Mosq pop going to T4}
+SurvMosq=SurvMosqAll[SurvMosqAll!=99]
+FreshMosquitoes=sum(rbinom(SurvMosq, 1,BirthRate))
+MosqPopT4=c(rep(0,FreshMosquitoes), #0=New adults
+            SurvMosq
+)
+DogsOut$t3=DogsPop
+```
+
+
+Initial phase T4
+
+Mosquitoes bite again
+```{r Mosq biting T4}
+MosqDogsT4=sum(rbinom(length(MosqPopT4), 1, HostPreference))
+MosqBittenDogsT4=sample(MosqPopT4, MosqDogsT4)
+MosqBittenDogsStatusT4=as.data.frame(table(MosqBittenDogsT4))
+MosqPopStatusT4=as.data.frame(table(MosqPopT4))
+
+tmp=as.character(MosqPopStatusT4$MosqPopT4[!(MosqPopStatusT4$MosqPopT4 %in% MosqBittenDogsStatusT4$MosqBittenDogsT4)])
+tmp.df=cbind(tmp,rep(0,length(tmp)))
+colnames(tmp.df)=colnames(MosqBittenDogsStatusT4)
+MosqBittenDogsStatusT4$MosqBittenDogsT4=as.character(MosqBittenDogsStatusT4$MosqBittenDogsT4)
+MosqBittenDogsStatusT4=rbind(MosqBittenDogsStatusT4,tmp.df)
+MosqBittenDogsStatusT4$Freq=as.numeric(MosqBittenDogsStatusT4$Freq)
+MosqPopSummT4=merge(MosqPopStatusT4,MosqBittenDogsStatusT4,by.x = "MosqPopT4", by.y = "MosqBittenDogsT4")
+colnames(MosqPopSummT4)=c("Status","All","BittenDog")
+MosqPopSummT4$Diff=MosqPopSummT4$All-MosqPopSummT4$BittenDog
+MosqPopSummT4$Status=as.character(MosqPopSummT4$Status)
+tmp=StatusAll[!(StatusAll %in% MosqPopSummT4$Status)]
+tmp.df=cbind(tmp,rep(0,length(tmp)),rep(0,length(tmp)),rep(0,length(tmp)))
+colnames(tmp.df)=colnames(MosqPopSummT4)
+MosqPopSummT4=rbind(MosqPopSummT4,tmp.df)
+
+
+MosqOut=merge(MosqOut,MosqPopStatusT4,by.x ="Status",by.y ="MosqPopT4",all = T)
+```
+
+Dogs move up in infection age
+```{r Dogs aging T4}
+DogsPop=ifelse(DogsPop>=100,DogsPop+1,DogsPop)
+```
+
+Non-infected pathway
+
+Age 4 mosquitoes don't survive until age 5 (but still can infect dogs at this stage)
+
+```{r Non-infected pathway T4}
+NonInfectedMosqLS0=MosqBittenDogsStatusT4[MosqBittenDogsStatusT4$MosqBittenDogsT4==0,"Freq"]
+NonInfectedMosqLS1=MosqBittenDogsStatusT4[MosqBittenDogsStatusT4$MosqBittenDogsT4==10,"Freq"]
+NonInfectedMosqLS2=MosqBittenDogsStatusT4[MosqBittenDogsStatusT4$MosqBittenDogsT4==20,"Freq"]
+NonInfectedMosqLS3=MosqBittenDogsStatusT4[MosqBittenDogsStatusT4$MosqBittenDogsT4==30,"Freq"]
+
+NonInfectedMosqLS0BittenDogs=sample(DogsPop, NonInfectedMosqLS0,replace=T)
+NonInfectedMosqLS0BittenDogsStatus=as.data.frame(table(NonInfectedMosqLS0BittenDogs))
+
+TreatedNonInfectedMosqLS0=sum(NonInfectedMosqLS0BittenDogsStatus %>% filter(NonInfectedMosqLS0BittenDogs %in% c(2,3)) %>% select(Freq))
+InfectedNonInfectedMosqLS0=sum(NonInfectedMosqLS0BittenDogsStatus %>% filter(NonInfectedMosqLS0BittenDogs %in% c(1)) %>% select(Freq))
+NonInfectedNonInfectedMosqLS0=sum(NonInfectedMosqLS0BittenDogsStatus %>% filter(NonInfectedMosqLS0BittenDogs %in% c(0)) %>% select(Freq))
+
+NewMosqPopT5All=c(rep(99,TreatedNonInfectedMosqLS0),  #99=Treated
+               rep(10,NonInfectedNonInfectedMosqLS0), #10=Non-infected mosq age 1
+               rep(11,InfectedNonInfectedMosqLS0) #11=Infected mosq age 1
+               )
+
+NonInfectedMosqLS1BittenDogs=sample(DogsPop, NonInfectedMosqLS1,replace=T)
+NonInfectedMosqLS1BittenDogsStatus=as.data.frame(table(NonInfectedMosqLS1BittenDogs))
+
+TreatedNonInfectedMosqLS1=sum(NonInfectedMosqLS1BittenDogsStatus %>% filter(NonInfectedMosqLS1BittenDogs %in% c(2,3)) %>% select(Freq))
+InfectedNonInfectedMosqLS1=sum(NonInfectedMosqLS1BittenDogsStatus %>% filter(NonInfectedMosqLS1BittenDogs %in% c(1)) %>% select(Freq))
+NonInfectedNonInfectedMosqLS1=sum(NonInfectedMosqLS1BittenDogsStatus %>% filter(NonInfectedMosqLS1BittenDogs %in% c(0)) %>% select(Freq))
+
+NewMosqPopT5All=c(NewMosqPopT5All,
+               rep(99,TreatedNonInfectedMosqLS1),  #99=Treated
+               rep(20,NonInfectedNonInfectedMosqLS1), #10=Non-infected mosq age 2
+               rep(21,InfectedNonInfectedMosqLS1) #11=Infected mosq age 2
+)
+
+NonInfectedMosqLS2BittenDogs=sample(DogsPop, NonInfectedMosqLS2,replace=T)
+NonInfectedMosqLS2BittenDogsStatus=as.data.frame(table(NonInfectedMosqLS2BittenDogs))
+
+TreatedNonInfectedMosqLS2=sum(NonInfectedMosqLS2BittenDogsStatus %>% filter(NonInfectedMosqLS2BittenDogs %in% c(2,3)) %>% select(Freq))
+InfectedNonInfectedMosqLS2=sum(NonInfectedMosqLS2BittenDogsStatus %>% filter(NonInfectedMosqLS2BittenDogs %in% c(1)) %>% select(Freq))
+NonInfectedNonInfectedMosqLS2=sum(NonInfectedMosqLS2BittenDogsStatus %>% filter(NonInfectedMosqLS2BittenDogs %in% c(0)) %>% select(Freq))
+
+NewMosqPopT5All=c(NewMosqPopT5All,
+               rep(99,TreatedNonInfectedMosqLS2),  #99=Treated
+               rep(30,NonInfectedNonInfectedMosqLS2), #30=Non-infected mosq age 3
+               rep(31,InfectedNonInfectedMosqLS2) #31=Infected mosq age 3
+)
+
+
+NonInfectedMosqLS3BittenDogs=sample(DogsPop, NonInfectedMosqLS3,replace=T)
+NonInfectedMosqLS3BittenDogsStatus=as.data.frame(table(NonInfectedMosqLS3BittenDogs))
+
+TreatedNonInfectedMosqLS3=sum(NonInfectedMosqLS3BittenDogsStatus %>% filter(NonInfectedMosqLS3BittenDogs %in% c(2,3)) %>% select(Freq))
+InfectedNonInfectedMosqLS3=sum(NonInfectedMosqLS3BittenDogsStatus %>% filter(NonInfectedMosqLS3BittenDogs %in% c(1)) %>% select(Freq))
+NonInfectedNonInfectedMosqLS3=sum(NonInfectedMosqLS3BittenDogsStatus %>% filter(NonInfectedMosqLS3BittenDogs %in% c(0)) %>% select(Freq))
+
+NewMosqPopT5All=c(NewMosqPopT5All,
+               rep(99,TreatedNonInfectedMosqLS3),  #99=Treated
+               rep(40,NonInfectedNonInfectedMosqLS3), #40=Non-infected mosq age 4
+               rep(41,InfectedNonInfectedMosqLS3) #41=Infected mosq age 4
+)
+
+
+```
+
+Infected pathway
+
+Age 4 mosquitoes don't survive until age 5 (but still can infect dogs at this stage)
+
+```{r Infected pathway T4}
+InfectedMosqLS1=MosqBittenDogsStatusT4[MosqBittenDogsStatusT4$MosqBittenDogsT4==11,"Freq"]
+InfectedMosqLS2=MosqBittenDogsStatusT4[MosqBittenDogsStatusT4$MosqBittenDogsT4==21,"Freq"]
+InfectedMosqLS3=MosqBittenDogsStatusT4[MosqBittenDogsStatusT4$MosqBittenDogsT4==31,"Freq"]
+
+InfectedMosqLS1BittenDogs=sample(DogsPop, InfectedMosqLS1,replace=T)
+InfectedMosqLS1BittenDogsStatus=as.data.frame(table(InfectedMosqLS1BittenDogs))
+TreatedInfectedMosqLS1=sum(InfectedMosqLS1BittenDogsStatus %>% filter(InfectedMosqLS1BittenDogs %in% c(2,3)) %>% select(Freq))
+
+NewMosqPopT5All=c(NewMosqPopT5All,
+                  rep(22,InfectedMosqLS1-TreatedInfectedMosqLS1),  #22=Infectious mosq age 2
+                  rep(99,TreatedInfectedMosqLS1) #99=Treated
+)
+
+InfectedMosqLS2BittenDogs=sample(DogsPop, InfectedMosqLS2,replace=T)
+InfectedMosqLS2BittenDogsStatus=as.data.frame(table(InfectedMosqLS2BittenDogs))
+TreatedInfectedMosqLS2=sum(InfectedMosqLS2BittenDogsStatus %>% filter(InfectedMosqLS2BittenDogs %in% c(2,3)) %>% select(Freq))
+
+NewMosqPopT5All=c(NewMosqPopT5All,
+                  rep(32,InfectedMosqLS2-TreatedInfectedMosqLS2),  #32=Infectious mosq age 3
+                  rep(99,TreatedInfectedMosqLS2) #99=Treated
+)
+
+
+InfectedMosqLS3BittenDogs=sample(DogsPop, InfectedMosqLS3,replace=T)
+InfectedMosqLS3BittenDogsStatus=as.data.frame(table(InfectedMosqLS3BittenDogs))
+TreatedInfectedMosqLS3=sum(InfectedMosqLS3BittenDogsStatus %>% filter(InfectedMosqLS3BittenDogs %in% c(2,3)) %>% select(Freq))
+
+NewMosqPopT5All=c(NewMosqPopT5All,
+                  rep(42,InfectedMosqLS3-TreatedInfectedMosqLS3),  #42=Infectious mosq age 3
+                  rep(99,TreatedInfectedMosqLS3) #99=Treated
+)
+```
+
+Infectious pathway
+```{r Infectious pathway T4}
+InfectiousMosqLS2=MosqBittenDogsStatusT4[MosqBittenDogsStatusT4$MosqBittenDogsT4==22,"Freq"]
+InfectiousMosqLS3=MosqBittenDogsStatusT4[MosqBittenDogsStatusT4$MosqBittenDogsT4==32,"Freq"]
+InfectiousMosqLS4=MosqBittenDogsStatusT4[MosqBittenDogsStatusT4$MosqBittenDogsT4==42,"Freq"]
+
+InfectiousMosqLS2BittenDogs=sample(DogsPop, InfectiousMosqLS2,replace=T)
+InfectiousMosqLS2BittenDogsStatus=as.data.frame(table(InfectiousMosqLS2BittenDogs))
+TreatedInfectiousMosqLS2=sum(InfectiousMosqLS2BittenDogsStatus %>% filter(InfectiousMosqLS2BittenDogs %in% c(2,3)) %>% select(Freq))
+
+NewMosqPopT5All=c(NewMosqPopT5All,
+                  rep(32,InfectiousMosqLS2-TreatedInfectiousMosqLS2),  #32=Infectious mosq age 3
+                  rep(99,TreatedInfectiousMosqLS2) #99=Treated
+)
+
+InfectiousMosqLS3BittenDogs=sample(DogsPop, InfectiousMosqLS3,replace=T)
+InfectiousMosqLS3BittenDogsStatus=as.data.frame(table(InfectiousMosqLS3BittenDogs))
+TreatedInfectiousMosqLS3=sum(InfectiousMosqLS3BittenDogsStatus %>% filter(InfectiousMosqLS3BittenDogs %in% c(2,3)) %>% select(Freq))
+
+NewMosqPopT5All=c(NewMosqPopT5All,
+                  rep(42,InfectiousMosqLS3-TreatedInfectiousMosqLS3),  #42=Infectious mosq age 4
+                  rep(99,TreatedInfectiousMosqLS3) #99=Treated
+)
+
+
+InfectiousMosqLS4BittenDogs=sample(DogsPop, InfectiousMosqLS4,replace=T)
+InfectiousMosqLS4BittenDogsStatus=as.data.frame(table(InfectiousMosqLS4BittenDogs))
+TreatedInfectiousMosqLS4=sum(InfectiousMosqLS4BittenDogsStatus %>% filter(InfectiousMosqLS4BittenDogs %in% c(2,3)) %>% select(Freq))
+
+```
+
+
+Dogs get infected and will take 60 days to become infectious (15 time steps) so we need to keep count of that
+
+100=Infected dogs but not yet infectious at infection age 1
+
+```{r Dogs get infected T4}
+NewInfectedDogs=sum(rbinom(sum(c(InfectiousMosqLS2BittenDogsStatus[InfectiousMosqLS2BittenDogsStatus$ InfectiousMosqLS2BittenDogs==0,"Freq"],
+                                 InfectiousMosqLS3BittenDogsStatus[InfectiousMosqLS3BittenDogsStatus$ InfectiousMosqLS3BittenDogs==0,"Freq"],
+                                 InfectiousMosqLS4BittenDogsStatus[InfectiousMosqLS4BittenDogsStatus$ InfectiousMosqLS4BittenDogs==0,"Freq"])),
+                           1,MinInfectiousRate))
+DogsPop=replace(DogsPop,which(DogsPop==0)[1:NewInfectedDogs],100) 
+
+```
+
+
+Mosquitoes die off naturally (also in the treated group)
+
+```{r Natural deaths T4}
+TotalMosqPop=c(NewMosqPopT5All,
+               rep(10,MosqPopSummT4[MosqPopSummT4$Status==0,"Diff"]),#Everything moves up in age
+               rep(20,MosqPopSummT4[MosqPopSummT4$Status==10,"Diff"]),#Everything moves up in age
+               rep(22,MosqPopSummT4[MosqPopSummT4$Status==11,"Diff"]), #They now become infectious
+               rep(30,MosqPopSummT4[MosqPopSummT4$Status==20,"Diff"]),#Everything moves up in age
+               rep(32,MosqPopSummT4[MosqPopSummT4$Status==21,"Diff"]),#They now become infectious
+               rep(32,MosqPopSummT4[MosqPopSummT4$Status==22,"Diff"]), #Remain infectious
+               rep(40,MosqPopSummT4[MosqPopSummT4$Status==30,"Diff"]),#Everything moves up in age
+               rep(42,MosqPopSummT4[MosqPopSummT4$Status==31,"Diff"]),#They now become infectious
+               rep(42,MosqPopSummT4[MosqPopSummT4$Status==32,"Diff"]) #Remain infectious
+               )
+NaturalDeaths=sum(rbinom(TotalMosqPop, 1,(1-DeathRate)))
+SurvMosqAll=sample(TotalMosqPop, NaturalDeaths)
+```
+
+Mosquito stages going to the next time step
+
+```{r Mosq pop going to Tn}
+SurvMosq=SurvMosqAll[SurvMosqAll!=99]
+FreshMosquitoes=sum(rbinom(SurvMosq, 1,BirthRate))
+MosqPopTn=c(rep(0,FreshMosquitoes), #0=New adults
+            SurvMosq
+)
+
+DogsOut$t4=DogsPop
+```
+
+
+Spin-up is now complete and we will now go to a loop
+
+```{r Loop}
+for (i in 1:RunTimeSteps){
+  
+  print(i)
+  
+  #Mosquitoes bite again
+  MosqDogsTn=sum(rbinom(length(MosqPopTn), 1, HostPreference))
+  MosqBittenDogsTn=sample(MosqPopTn, MosqDogsTn)
+  MosqBittenDogsStatusTn=as.data.frame(table(MosqBittenDogsTn))
+  MosqPopStatusTn=as.data.frame(table(MosqPopTn))
+  tmp=as.character(MosqPopStatusTn$MosqPopTn[!(MosqPopStatusTn$MosqPopTn %in% MosqBittenDogsStatusTn$MosqBittenDogsTn)])
+  tmp.df=cbind(tmp,rep(0,length(tmp)))
+  colnames(tmp.df)=colnames(MosqBittenDogsStatusTn)
+  MosqBittenDogsStatusTn$MosqBittenDogsTn=as.character(MosqBittenDogsStatusTn$MosqBittenDogsTn)
+  MosqBittenDogsStatusTn=rbind(MosqBittenDogsStatusTn,tmp.df)
+  MosqBittenDogsStatusTn$Freq=as.numeric(MosqBittenDogsStatusTn$Freq)
+  MosqPopSummTn=merge(MosqPopStatusTn,MosqBittenDogsStatusTn,by.x = "MosqPopTn", by.y = "MosqBittenDogsTn")
+  colnames(MosqPopSummTn)=c("Status","All","BittenDog")
+  MosqPopSummTn$Diff=MosqPopSummTn$All-MosqPopSummTn$BittenDog
+  MosqPopSummTn$Status=as.character(MosqPopSummTn$Status)
+  tmp=StatusAll[!(StatusAll %in% MosqPopSummTn$Status)]
+  tmp.df=cbind(tmp,rep(0,length(tmp)),rep(0,length(tmp)),rep(0,length(tmp)))
+  colnames(tmp.df)=colnames(MosqPopSummTn)
+  MosqPopSummTn=rbind(MosqPopSummTn,tmp.df)
+  
+  MosqOut=merge(MosqOut,MosqPopStatusTn,by.x ="Status",by.y ="MosqPopTn",all = T)
+
+  #Dogs move up in infection age
+  DogsPop=ifelse(DogsPop>=100,DogsPop+1,DogsPop)
+  
+  #Dogs become infectious after infectious age 15
+  DogsPop=ifelse(DogsPop>115,1,DogsPop)
+  
+  ###Non-infected pathway
+
+  if (0 %in% MosqBittenDogsStatusTn$MosqBittenDogsTn){
+  NonInfectedMosqLS0=MosqBittenDogsStatusTn[MosqBittenDogsStatusTn$MosqBittenDogsTn==0,"Freq"]
+  NonInfectedMosqLS0BittenDogs=sample(DogsPop, NonInfectedMosqLS0,replace=T)
+  NonInfectedMosqLS0BittenDogsStatus=as.data.frame(table(NonInfectedMosqLS0BittenDogs))
+
+  TreatedNonInfectedMosqLS0=sum(NonInfectedMosqLS0BittenDogsStatus %>% filter(NonInfectedMosqLS0BittenDogs %in% c(2,3)) %>% select(Freq))
+  InfectedNonInfectedMosqLS0=sum(NonInfectedMosqLS0BittenDogsStatus %>% filter(NonInfectedMosqLS0BittenDogs %in% c(1)) %>% select(Freq))
+  NonInfectedNonInfectedMosqLS0=sum(NonInfectedMosqLS0BittenDogsStatus %>% filter(NonInfectedMosqLS0BittenDogs %in% c(0)) %>% select(Freq))
+
+  NewMosqPopT5All=c(rep(99,TreatedNonInfectedMosqLS0),  #99=Treated
+               rep(10,NonInfectedNonInfectedMosqLS0), #10=Non-infected mosq age 1
+               rep(11,InfectedNonInfectedMosqLS0) #11=Infected mosq age 1
+               )
+  }
+
+  if (10 %in% MosqBittenDogsStatusTn$MosqBittenDogsTn){
+  NonInfectedMosqLS1=MosqBittenDogsStatusTn[MosqBittenDogsStatusTn$MosqBittenDogsTn==10,"Freq"]
+  NonInfectedMosqLS1BittenDogs=sample(DogsPop, NonInfectedMosqLS1,replace=T)
+  NonInfectedMosqLS1BittenDogsStatus=as.data.frame(table(NonInfectedMosqLS1BittenDogs))
+
+  TreatedNonInfectedMosqLS1=sum(NonInfectedMosqLS1BittenDogsStatus %>% filter(NonInfectedMosqLS1BittenDogs %in% c(2,3)) %>% select(Freq))
+  InfectedNonInfectedMosqLS1=sum(NonInfectedMosqLS1BittenDogsStatus %>% filter(NonInfectedMosqLS1BittenDogs %in% c(1)) %>% select(Freq))
+  NonInfectedNonInfectedMosqLS1=sum(NonInfectedMosqLS1BittenDogsStatus %>% filter(NonInfectedMosqLS1BittenDogs %in% c(0)) %>% select(Freq))
+
+  NewMosqPopT5All=c(NewMosqPopT5All,
+               rep(99,TreatedNonInfectedMosqLS1),  #99=Treated
+               rep(20,NonInfectedNonInfectedMosqLS1), #10=Non-infected mosq age 2
+               rep(21,InfectedNonInfectedMosqLS1) #11=Infected mosq age 2
+  )
+  
+  }
+
+  if (20 %in% MosqBittenDogsStatusTn$MosqBittenDogsTn){
+  NonInfectedMosqLS2=MosqBittenDogsStatusTn[MosqBittenDogsStatusTn$MosqBittenDogsTn==20,"Freq"]
+  NonInfectedMosqLS2BittenDogs=sample(DogsPop, NonInfectedMosqLS2,replace=T)
+  NonInfectedMosqLS2BittenDogsStatus=as.data.frame(table(NonInfectedMosqLS2BittenDogs))
+
+  TreatedNonInfectedMosqLS2=sum(NonInfectedMosqLS2BittenDogsStatus %>% filter(NonInfectedMosqLS2BittenDogs %in% c(2,3)) %>% select(Freq))
+  InfectedNonInfectedMosqLS2=sum(NonInfectedMosqLS2BittenDogsStatus %>% filter(NonInfectedMosqLS2BittenDogs %in% c(1)) %>% select(Freq))
+  NonInfectedNonInfectedMosqLS2=sum(NonInfectedMosqLS2BittenDogsStatus %>% filter(NonInfectedMosqLS2BittenDogs %in% c(0)) %>% select(Freq))
+
+  NewMosqPopT5All=c(NewMosqPopT5All,
+               rep(99,TreatedNonInfectedMosqLS2),  #99=Treated
+               rep(30,NonInfectedNonInfectedMosqLS2), #30=Non-infected mosq age 3
+               rep(31,InfectedNonInfectedMosqLS2) #31=Infected mosq age 3
+  )
+  
+  }
+
+  if (30 %in% MosqBittenDogsStatusTn$MosqBittenDogsTn){
+  NonInfectedMosqLS3=MosqBittenDogsStatusTn[MosqBittenDogsStatusTn$MosqBittenDogsTn==30,"Freq"]
+  NonInfectedMosqLS3BittenDogs=sample(DogsPop, NonInfectedMosqLS3,replace=T)
+  NonInfectedMosqLS3BittenDogsStatus=as.data.frame(table(NonInfectedMosqLS3BittenDogs))
+
+  TreatedNonInfectedMosqLS3=sum(NonInfectedMosqLS3BittenDogsStatus %>% filter(NonInfectedMosqLS3BittenDogs %in% c(2,3)) %>% select(Freq))
+  InfectedNonInfectedMosqLS3=sum(NonInfectedMosqLS3BittenDogsStatus %>% filter(NonInfectedMosqLS3BittenDogs %in% c(1)) %>% select(Freq))
+  NonInfectedNonInfectedMosqLS3=sum(NonInfectedMosqLS3BittenDogsStatus %>% filter(NonInfectedMosqLS3BittenDogs %in% c(0)) %>% select(Freq))
+
+  NewMosqPopT5All=c(NewMosqPopT5All,
+               rep(99,TreatedNonInfectedMosqLS3),  #99=Treated
+               rep(40,NonInfectedNonInfectedMosqLS3), #40=Non-infected mosq age 4
+               rep(41,InfectedNonInfectedMosqLS3) #41=Infected mosq age 4
+  )
+  }
+  
+  ###Infected pathway
+  if (11 %in% MosqBittenDogsStatusTn$MosqBittenDogsTn){
+  InfectedMosqLS1=MosqBittenDogsStatusTn[MosqBittenDogsStatusTn$MosqBittenDogsTn==11,"Freq"]
+  InfectedMosqLS1BittenDogs=sample(DogsPop, InfectedMosqLS1,replace=T)
+  InfectedMosqLS1BittenDogsStatus=as.data.frame(table(InfectedMosqLS1BittenDogs))
+  TreatedInfectedMosqLS1=sum(InfectedMosqLS1BittenDogsStatus %>% filter(InfectedMosqLS1BittenDogs %in% c(2,3)) %>% select(Freq))
+
+  NewMosqPopT5All=c(NewMosqPopT5All,
+                  rep(22,InfectedMosqLS1-TreatedInfectedMosqLS1),  #22=Infectious mosq age 2
+                  rep(99,TreatedInfectedMosqLS1) #99=Treated
+  )
+  }
+
+  if (21 %in% MosqBittenDogsStatusTn$MosqBittenDogsTn){
+  InfectedMosqLS2=MosqBittenDogsStatusTn[MosqBittenDogsStatusTn$MosqBittenDogsTn==21,"Freq"]
+  InfectedMosqLS2BittenDogs=sample(DogsPop, InfectedMosqLS2,replace=T)
+  InfectedMosqLS2BittenDogsStatus=as.data.frame(table(InfectedMosqLS2BittenDogs))
+  TreatedInfectedMosqLS2=sum(InfectedMosqLS2BittenDogsStatus %>% filter(InfectedMosqLS2BittenDogs %in% c(2,3)) %>% select(Freq))
+
+  NewMosqPopT5All=c(NewMosqPopT5All,
+                  rep(32,InfectedMosqLS2-TreatedInfectedMosqLS2),  #32=Infectious mosq age 3
+                  rep(99,TreatedInfectedMosqLS2) #99=Treated
+  )
+  }
+
+  if (31 %in% MosqBittenDogsStatusTn$MosqBittenDogsTn){
+  InfectedMosqLS3=MosqBittenDogsStatusTn[MosqBittenDogsStatusTn$MosqBittenDogsTn==31,"Freq"]
+  InfectedMosqLS3BittenDogs=sample(DogsPop, InfectedMosqLS3,replace=T)
+  InfectedMosqLS3BittenDogsStatus=as.data.frame(table(InfectedMosqLS3BittenDogs))
+  TreatedInfectedMosqLS3=sum(InfectedMosqLS3BittenDogsStatus %>% filter(InfectedMosqLS3BittenDogs %in% c(2,3)) %>% select(Freq))
+
+  NewMosqPopT5All=c(NewMosqPopT5All,
+                  rep(42,InfectedMosqLS3-TreatedInfectedMosqLS3),  #42=Infectious mosq age 3
+                  rep(99,TreatedInfectedMosqLS3) #99=Treated
+  )
+  }
+  
+  ####Infectious pathway
+  
+  if (22 %in% MosqBittenDogsStatusTn$MosqBittenDogsTn){
+  InfectiousMosqLS2=MosqBittenDogsStatusTn[MosqBittenDogsStatusTn$MosqBittenDogsTn==22,"Freq"]
+  InfectiousMosqLS2BittenDogs=sample(DogsPop, InfectiousMosqLS2,replace=T)
+  InfectiousMosqLS2BittenDogsStatus=as.data.frame(table(InfectiousMosqLS2BittenDogs))
+  TreatedInfectiousMosqLS2=sum(InfectiousMosqLS2BittenDogsStatus %>% filter(InfectiousMosqLS2BittenDogs %in% c(2,3)) %>% select(Freq))
+
+  NewMosqPopT5All=c(NewMosqPopT5All,
+                  rep(32,InfectiousMosqLS2-TreatedInfectiousMosqLS2),  #32=Infectious mosq age 3
+                  rep(99,TreatedInfectiousMosqLS2) #99=Treated
+  )
+  }
+
+  if (32 %in% MosqBittenDogsStatusTn$MosqBittenDogsTn){
+  InfectiousMosqLS3=MosqBittenDogsStatusTn[MosqBittenDogsStatusTn$MosqBittenDogsTn==32,"Freq"]
+  InfectiousMosqLS3BittenDogs=sample(DogsPop, InfectiousMosqLS3,replace=T)
+  InfectiousMosqLS3BittenDogsStatus=as.data.frame(table(InfectiousMosqLS3BittenDogs))
+  TreatedInfectiousMosqLS3=sum(InfectiousMosqLS3BittenDogsStatus %>% filter(InfectiousMosqLS3BittenDogs %in% c(2,3)) %>% select(Freq))
+
+  NewMosqPopT5All=c(NewMosqPopT5All,
+                  rep(42,InfectiousMosqLS3-TreatedInfectiousMosqLS3),  #42=Infectious mosq age 4
+                  rep(99,TreatedInfectiousMosqLS3) #99=Treated
+  )
+  }
+
+  if (42 %in% MosqBittenDogsStatusTn$MosqBittenDogsTn){
+  InfectiousMosqLS4=MosqBittenDogsStatusTn[MosqBittenDogsStatusTn$MosqBittenDogsTn==42,"Freq"]
+  InfectiousMosqLS4BittenDogs=sample(DogsPop, InfectiousMosqLS4,replace=T)
+  InfectiousMosqLS4BittenDogsStatus=as.data.frame(table(InfectiousMosqLS4BittenDogs))
+  TreatedInfectiousMosqLS4=sum(InfectiousMosqLS4BittenDogsStatus %>% filter(InfectiousMosqLS4BittenDogs %in% c(2,3)) %>% select(Freq))
+  }
+  
+  #Dogs get infected and will take 60 days to become infectious (15 time steps) so we need to keep count of that
+  NewInfectedDogs=sum(rbinom(sum(c(InfectiousMosqLS2BittenDogsStatus[InfectiousMosqLS2BittenDogsStatus$ InfectiousMosqLS2BittenDogs==0,"Freq"],
+                                 InfectiousMosqLS3BittenDogsStatus[InfectiousMosqLS3BittenDogsStatus$ InfectiousMosqLS3BittenDogs==0,"Freq"],
+                                 InfectiousMosqLS4BittenDogsStatus[InfectiousMosqLS4BittenDogsStatus$ InfectiousMosqLS4BittenDogs==0,"Freq"])),
+                           1,MinInfectiousRate))
+  DogsPop=replace(DogsPop,which(DogsPop==0)[1:NewInfectedDogs],100) 
+  
+  #Natural deaths
+  
+  TotalMosqPop=c(NewMosqPopT5All,
+               rep(10,MosqPopSummTn[MosqPopSummTn$Status==0,"Diff"]),#Everything moves up in age
+               rep(20,MosqPopSummTn[MosqPopSummTn$Status==10,"Diff"]),#Everything moves up in age
+               rep(22,MosqPopSummTn[MosqPopSummTn$Status==11,"Diff"]), #They now become infectious
+               rep(30,MosqPopSummTn[MosqPopSummTn$Status==20,"Diff"]),#Everything moves up in age
+               rep(32,MosqPopSummTn[MosqPopSummTn$Status==21,"Diff"]),#They now become infectious
+               rep(32,MosqPopSummTn[MosqPopSummTn$Status==22,"Diff"]), #Remain infectious
+               rep(40,MosqPopSummTn[MosqPopSummTn$Status==30,"Diff"]),#Everything moves up in age
+               rep(42,MosqPopSummTn[MosqPopSummTn$Status==31,"Diff"]),#They now become infectious
+               rep(42,MosqPopSummTn[MosqPopSummTn$Status==32,"Diff"]) #Remain infectious
+               )
+  NaturalDeaths=sum(rbinom(TotalMosqPop, 1,(1-DeathRate)))
+  SurvMosqAll=sample(TotalMosqPop, NaturalDeaths)
+  
+  ##Mosquitoes going to the next stage
+  
+  SurvMosq=SurvMosqAll[SurvMosqAll!=99]
+  FreshMosquitoes=sum(rbinom(SurvMosq, 1,BirthRate))
+  MosqPopTn=c(rep(0,FreshMosquitoes), #0=New adults
+            SurvMosq
+  )
+
+  DogsOut[[paste0("tn+",i)]]=DogsPop
+  
+ }
+```
+
+
+Output graphs
+
+```{r Output}
+colnames(MosqOut)=c("Status",colnames(DogsOut))
+
+MosqGraph=tibble(Timestep=rep(colnames(DogsOut),nrow(MosqOut)),
+                 Group=rep(MosqOut$Status, each=ncol(DogsOut)),
+                 Count=as.vector(t(as.matrix(MosqOut[,2:ncol(MosqOut)]))))
+
+
+ggplot(data = MosqGraph, aes(x=fct_inorder(Timestep), y=Count, group=Group)) + 
+  geom_line(aes(colour=Group)) +
+  geom_vline(aes(xintercept="tn+1"))
+
+
+DogsGraph.int=DogsOut %>% melt() %>% dcast(value ~ variable, fun.aggregate=length)
+
+tmp2=DogsGraph.int %>% filter(value %in% 100:115) %>% colSums(na.rm = TRUE)
+
+DogsGraph.int2=rbind(DogsGraph.int,tmp2)
+DogsGraph.int2=DogsGraph.int2 %>% filter(!(value %in% 100:115))
+DogsGraph.int2$value=c("NotInfected","Infectious","InfectedTreated","NotInfectedTreated","Infected")
+
+DogsGraph=tibble(Timestep=rep(colnames(DogsOut),nrow(DogsGraph.int2)),
+                 Group=rep(DogsGraph.int2$value, each=ncol(DogsOut)),
+                 Count=as.vector(t(as.matrix(DogsGraph.int2[,2:ncol(DogsGraph.int2)]))))
+
+ggplot(data = DogsGraph, aes(x=fct_inorder(Timestep), y=Count, group=Group)) + 
+  geom_line(aes(colour=Group)) +
+  geom_vline(aes(xintercept="tn+1"))
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
